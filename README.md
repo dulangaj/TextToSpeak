@@ -46,7 +46,42 @@ speak "hello world" -o hello.wav --voice bf_emma
 ```
 
 Flags: `-j/--job VOICE:TEXT` (repeatable), `-o/--output`, `-d/--outdir`,
-`--voice` (default for bare text), `--model`, `--speed`.
+`--voice` (default for bare text), `--model`, `--speed`, `--watch`.
+
+To fire many requests without paying the ~4s model-load cost each time, use
+`--watch`: it keeps the process alive and synthesizes one `voice:text` line
+per stdin line as it arrives. Pipe requests into it from a FIFO or another
+process:
+
+```bash
+mkfifo /tmp/speak.fifo
+speak --watch -d out/ < /tmp/speak.fifo &
+echo 'af_heart: first' > /tmp/speak.fifo
+echo 'am_michael: second' > /tmp/speak.fifo
+```
+
+### Large batches
+
+For a big batch (e.g. 500 lines), skip `--watch` — plain stdin mode already
+loads the model once and renders every line in one process:
+
+```bash
+speak -d out/ < requests.txt
+```
+
+`requests.txt` is just `voice: text` per line:
+
+```
+af_heart: hi how are you today
+am_michael: i'm fine thanks
+```
+
+Before a large run, sanity-check the voice names you used against the list
+below — a typo (e.g. `am_micheal`) won't error, it'll just fail or mispronounce:
+
+```bash
+cut -d: -f1 requests.txt | sort -u
+```
 
 Voices are Kokoro's: the first letter is the language pipeline, the second is
 gender (`f`/`m`) — `a`=American, `b`=British, `e`=Spanish, `f`=French,

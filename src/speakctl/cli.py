@@ -46,7 +46,25 @@ def main() -> int:
     parser.add_argument("--voice", default=DEFAULT_VOICE, help=f"default voice (default: {DEFAULT_VOICE})")
     parser.add_argument("--model", default=DEFAULT_MODEL, help=f"MLX-Audio model id (default: {DEFAULT_MODEL})")
     parser.add_argument("--speed", type=float, default=1.0, help="speech rate multiplier (default: 1.0)")
+    parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="keep the model loaded and synthesize one voice:text line per stdin "
+        "line as it arrives, instead of exiting after one batch",
+    )
     args = parser.parse_args()
+
+    if args.watch:
+        engine = TTSEngine(model_id=args.model, speed=args.speed)
+        outdir = Path(args.outdir)
+        for index, line in enumerate(sys.stdin, start=1):
+            job = _parse_job(line.strip(), args.voice)
+            if not job.text.strip():
+                continue
+            path = outdir / f"{index:03d}_{job.voice}.wav"
+            engine.synthesize(job.text, path, voice=job.voice)
+            print(path, flush=True)
+        return 0
 
     jobs = _collect_jobs(args)
     if not jobs:

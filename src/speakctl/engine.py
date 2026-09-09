@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import inspect
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
 import mlx.core as mx
+from huggingface_hub.errors import LocalEntryNotFoundError
+from huggingface_hub.utils import disable_progress_bars
 from mlx_audio.audio_io import write as audio_write
 from mlx_audio.tts.utils import load_model
+
+disable_progress_bars()
 
 DEFAULT_MODEL = "mlx-community/Kokoro-82M-bf16"
 DEFAULT_VOICE = "af_heart"
@@ -30,8 +35,24 @@ class TTSEngine:
     def __init__(self, model_id: str = DEFAULT_MODEL, speed: float = 1.0):
         self.model_id = model_id
         self.speed = speed
-        self.model = load_model(model_id)
+        self.model = self._load_model_cache_first(model_id)
         self._accepts_lang_code = "lang_code" in inspect.signature(self.model.generate).parameters
+
+    @staticmethod
+    def _load_model_cache_first(model_id: str):
+        """Try the local cache with no network round-trip; fetch only if something's missing."""
+        prior = os.environ.get("HF_HUB_OFFLINE")
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        try:
+            return load_model(model_id)
+        except (LocalEntryNotFoundError, FileNotFoundError):
+            pass
+        finally:
+            if prior is None:
+                os.environ.pop("HF_HUB_OFFLINE", None)
+            else:
+                os.environ["HF_HUB_OFFLINE"] = prior
+        return load_model(model_id)
 
     def synthesize(
         self,
