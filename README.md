@@ -123,8 +123,13 @@ It binds first, then loads the model and runs a short warm-up (skip it with
 `--no-warmup`), and logs `ready, listening on ...` once requests will be
 served. Connections made while it's loading wait until it's ready. Other
 flags: `--host`, `--port`, `--model`, `--speed` (default rate),
-`--split-pattern` (regex that decides streaming chunk size; default is
-sentence boundaries), `--max-text-chars`, `--log-level`.
+`--split-pattern`, `--max-text-chars`, `--log-level`.
+
+To keep latency low, the server has the model split text at sentence
+boundaries and streams each sentence as soon as it's rendered. `--split-pattern`
+changes that regex. The `speak` file commands don't split this way; they keep
+the model's own chunking, so a line read through the server can sound
+slightly different from the same line rendered by `speak`.
 
 Use `--watch` when you just want WAV files on disk from a shell pipeline. Use
 the server when another program wants the audio itself: it gets raw PCM back
@@ -146,7 +151,12 @@ with SpeakClient() as client:  # or SpeakClient("/tmp/speak.sock")
     response.cancel()
 ```
 
-Failures raise `SpeakError`, whose `.code` is one of the codes below.
+Failures raise `SpeakError`, whose `.code` is one of the server codes below
+or a client-side one: `connection_closed` (the socket dropped) or `timeout`.
+`chunks()`, `stream()` and `synthesize()` take `timeout=`, the longest wait
+for the next frame; when it expires the request is cancelled. The package
+imports only the standard library for `SpeakClient`, so a client app doesn't
+need numpy or MLX installed.
 
 ### Wire protocol
 
@@ -182,25 +192,33 @@ frame for that id, after which the id may be reused.
 | `too_many_requests` | the connection already has `max_inflight` requests queued or rendering |
 | `cancelled`         | the request was cancelled                                               |
 | `engine_error`      | the model failed on this request; the server and connection carry on   |
-| `protocol_error`    | unreadable framing; the server closes the connection after sending it  |
+| `protocol_error`    | unreadable framing; sent with `request_id` 0, then the server closes the connection |
 
 **Pipelining.** A client may send many `REQUEST`s without waiting. One
 worker renders requests in arrival order across all connections, so frames
-for different ids don't interleave in practice, but clients should route
-frames by `request_id` rather than rely on that. An `ERROR` for a duplicate
-id refers to the rejected frame; the original request keeps streaming.
+for different ids rarely interleave. Clients must still route frames by
+`request_id`: a validation `ERROR` for one request is sent straight away and
+can land between another request's `AUDIO` frames. An `ERROR` for a
+duplicate id refers to the rejected frame; the original request keeps
+streaming. An `ERROR` with `request_id` 0 is about the connection as a whole.
 
 **Cancellation.** `CANCEL` stops a queued request before it starts, or a
 running one at the next chunk. Either way the request ends with
 `ERROR cancelled` (unless it had already finished; a late `CANCEL` is
-ignored). Closing the connection cancels everything it had in flight.
+ignored). The server treats end-of-stream from the client as a disconnect and
+cancels everything that connection had in flight, so keep the write side open
+until the last `END` arrives: don't half-close it to signal "no more requests".
 
 **Unix socket.** With `--socket PATH` the server listens on a Unix domain
-socket; the protocol is identical. A stale socket file from an earlier run is
-replaced, and the file is removed on shutdown.
+socket; the protocol is identical. If the path exists, the server connects
+to it first: if another server answers, startup fails with "address in use";
+if nothing does (a leftover from a crashed server), the file is replaced. The
+server removes its socket file on shutdown.
 
-**Slow readers.** If a client stops reading and its outgoing buffer stays
-full for 30 seconds, the server drops that connection.
+**Slow readers.** Audio waiting to be sent is buffered per connection, so
+a client that plays audio in real time as it arrives never holds up other
+clients or the model. If a client falls more than 64 MiB behind (about 23
+minutes of audio), the server cancels its requests and drops the connection.
 
 A client in any language only needs this loop:
 
@@ -213,7 +231,7 @@ loop:
     0x11 START -> open audio output at sample_rate
     0x12 AUDIO -> write payload to it
     0x13 END   -> done with this id
-    0x14 ERROR -> fail this id with code/message
+    0x14 ERROR -> fail this id with code/message (id 0: the connection is closing)
 ```
 
 ## Development
