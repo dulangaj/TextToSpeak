@@ -56,7 +56,7 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.watch:
-        engine = TTSEngine(model_id=args.model, speed=args.speed)
+        engine = TTSEngine(model_id=args.model, speed=args.speed, split_pattern=None)
         outdir = Path(args.outdir)
         for index, line in enumerate(sys.stdin, start=1):
             job = _parse_job(line.strip(), args.voice)
@@ -75,7 +75,7 @@ def main() -> int:
             parser.error("-o works with a single snippet; use --outdir for several")
         jobs[0].output_path = Path(args.output)
 
-    engine = TTSEngine(model_id=args.model, speed=args.speed)
+    engine = TTSEngine(model_id=args.model, speed=args.speed, split_pattern=None)
     for path in engine.synthesize_many(jobs, outdir=args.outdir):
         print(path)
     return 0
@@ -105,12 +105,18 @@ def serve_main(argv: list[str] | None = None) -> int:
         "--max-text-chars", type=int, default=Limits.max_text_chars, help="longest accepted request text"
     )
     parser.add_argument("--no-warmup", action="store_true", help="skip the warm-up synthesis at startup")
-    parser.add_argument("--log-level", default="INFO", help="logging level (default: INFO)")
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        type=str.upper,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="logging level (default: INFO)",
+    )
     args = parser.parse_args(argv)
     if args.socket and args.port is not None:
         parser.error("argument --port: not allowed with argument --socket")
 
-    logging.basicConfig(level=args.log_level.upper(), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(level=args.log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     log = logging.getLogger("speakctl.serve")
 
     if args.socket:

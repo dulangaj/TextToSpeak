@@ -29,3 +29,8 @@ def test_parse_job_bare_text_uses_default():
 def test_parse_job_empty_voice_keeps_whole_spec():
     job = _parse_job(": hello", "bf_emma")
     assert (job.voice, job.text) == ("bf_emma", ": hello")
+
+
+def test_serve_rejects_unknown_log_level():
+    with pytest.raises(SystemExit):
+        serve_main(["--log-level", "chatty"])
