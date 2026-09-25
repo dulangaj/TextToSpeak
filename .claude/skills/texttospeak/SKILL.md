@@ -1,7 +1,7 @@
 ---
 name: texttospeak
 description: Turn text into spoken audio with local Kokoro TTS on this Mac — a podcast-style conversation between voices, or a single-narrator explanation — and hand back an M4A/WAV. Use when the user asks for a podcast, narration, voiceover, audiobook, audio explanation, "read this aloud", a spoken version, TTS, or a dialogue between voices. Needs Apple Silicon and the Bash sandbox disabled for the render step.
-allowed-tools: Bash(${CLAUDE_SKILL_DIR}/texttospeak.sh *)
+allowed-tools: Bash(bash ${CLAUDE_SKILL_DIR}/texttospeak.sh *)
 argument-hint: [text or topic] [podcast|narrate]
 ---
 
@@ -51,7 +51,9 @@ Options:
 - `--cast voice1=bf_emma,voice2=am_fenrir` swaps voices. Good alternatives: af_heart, af_bella, am_michael, am_fenrir, am_puck, bf_emma, bm_george, bm_fable
 - `--list-voices` prints every voice
 
-Expect a model-load pause of a few seconds, then rendering many times faster than real time (two lines take under 5 s total). The very first run on a machine downloads the model, which takes minutes and needs network. The command prints the output path.
+Expect a model-load pause of a few seconds, then rendering many times faster than real time (two lines take under 5 s total). The command prints the output path.
+
+First run pause: the very first run on a machine downloads the model and may take a few minutes (needs network). Wait for it; do not cancel and retry.
 
 ## 3. Deliver
 
