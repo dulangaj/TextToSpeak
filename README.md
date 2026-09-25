@@ -34,6 +34,8 @@ texttospeak "voice1: Hello there" "voice2: Hi, how are you?" -o chat.wav
 voice name works as a speaker too (`am_adam: Hi`). Swap voices with `--cast voice1=bf_alice,voice2=am_adam`,
 add `--split` to also get one file per line (`001_voice1.wav`, ...), and see every name with `--list-voices`.
 Lines can come from stdin (`texttospeak -o chat.wav < script.txt`); `--pause` sets the gap (default 0.35 s).
+A Claude Code skill for this command lives in `.claude/skills/texttospeak/`; symlink that folder into
+`~/.claude/skills/` to use it from any project.
 
 ## Using the CLI
 
