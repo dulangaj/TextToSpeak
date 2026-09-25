@@ -14,8 +14,9 @@ from typing import Iterator, List, Protocol
 
 import numpy as np
 
+from .protocol import DEFAULT_VOICE
+
 DEFAULT_MODEL = "mlx-community/Kokoro-82M-bf16"
-DEFAULT_VOICE = "af_heart"
 DEFAULT_SAMPLE_RATE = 24000
 # Sentence-sized chunks keep the time to first audio low when streaming.
 DEFAULT_SPLIT_PATTERN = r"(?<=[.!?…])\s+|\n+"
@@ -48,7 +49,12 @@ def float_to_s16le(samples: np.ndarray) -> bytes:
 
 
 class TTSEngine:
-    """Loads a TTS backend once and synthesizes any number of snippets with it."""
+    """Loads a TTS backend once and synthesizes any number of snippets with it.
+
+    `split_pattern` is the regex the MLX model splits text on before rendering;
+    None keeps the model's own default. It only applies when the engine loads
+    the model itself, and is ignored when an explicit `backend` is passed.
+    """
 
     def __init__(
         self,

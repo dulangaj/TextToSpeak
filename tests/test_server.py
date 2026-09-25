@@ -1,3 +1,4 @@
+import errno
 import json
 import os
 import shutil
@@ -317,7 +318,7 @@ def test_garbage_closes_connection(server, garbage):
         frame = raw.read()
         if frame is None:
             break
-        assert frame[0] == 0x14 and json.loads(frame[2])["code"] == "protocol_error"
+        assert frame[:2] == (0x14, 0) and json.loads(frame[2])["code"] == "protocol_error"
         assert time.monotonic() < deadline
     raw.close()
     # The server itself is unaffected.
@@ -344,7 +345,17 @@ def test_unix_socket(server_factory, engine):
         server.server_close()
         assert not os.path.exists(path)
 
-        # A stale socket file left behind by a crash is replaced on startup.
+        # A second server refuses a path a live server is listening on.
+        first = server_factory(address=path, warmup=False)
+        with pytest.raises(OSError) as info:
+            SpeakServer(path, engine_factory=lambda: engine)
+        assert info.value.errno == errno.EADDRINUSE
+        with SpeakClient(path) as client:
+            assert client.synthesize("Still first.")[0]
+        first.shutdown()
+        first.server_close()
+
+        # A socket file left behind by a crashed server is replaced on startup.
         stale = socket.socket(socket.AF_UNIX)
         stale.bind(path)
         stale.close()
@@ -413,17 +424,135 @@ def test_load_and_warmup_run_on_worker_thread():
     assert threads == ["speak-inference", "speak-inference"]
 
 
-def test_stuck_reader_is_dropped(server_factory):
-    backend = FakeBackend(chunk_seconds=1.0)
-    address = server_factory(
-        engine=TTSEngine(backend=backend), warmup=False, limits=Limits(outbox_frames=2, send_timeout=0.5)
-    ).server_address
-    stuck = Raw(address)
-    stuck.read()
-    stuck.request(1, long_text(60))  # never read
+def test_client_sees_protocol_error_as_connection_error(server):
+    client = SpeakClient(server)
+    try:
+        response = client.submit(long_text(3))
+        client._sock.sendall(b"\xff" * 9)
+        with pytest.raises(SpeakError) as info:
+            list(response.chunks(timeout=5))
+        assert info.value.code == "protocol_error"
+        assert "unknown frame type" in info.value.message
+        with pytest.raises(SpeakError):
+            client.submit("Too late.")
+    finally:
+        client.close()
+
+
+def small_rcvbuf_raw(address):
+    """A raw client whose kernel receive buffer is tiny, so unread data backs up fast."""
+    raw = Raw.__new__(Raw)
+    raw.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    raw.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+    raw.sock.settimeout(5)
+    raw.sock.connect(address)
+    return raw
+
+
+def test_slow_reader_does_not_block_others(server_factory):
+    """The worker never waits on a client: others are served while one isn't reading."""
+    backend = FakeBackend(chunk_seconds=1.0)  # ~48 KB per chunk, ~2.9 MB total
+    address = server_factory(engine=TTSEngine(backend=backend), warmup=False).server_address
+    stalled = small_rcvbuf_raw(address)
+    stalled.read()
+    stalled.request(1, long_text(60))
     started = time.monotonic()
     with SpeakClient(address) as client:
-        assert client.synthesize("Hi.")[0]
-    assert time.monotonic() - started < 5
-    assert backend.chunks_yielded < 60
-    stuck.close()
+        assert client.synthesize("Hi.", timeout=5)[0]
+    assert time.monotonic() - started < 2
+    # Well under outbox_bytes, so the stalled client's audio was buffered, not dropped.
+    frames = stalled.until_terminal(1)
+    assert frames[-1] == (0x13, 1, b"")
+    assert len([f for f in frames if f[0] == 0x12]) == 60
+    stalled.close()
+
+
+def test_client_over_outbox_limit_is_dropped(server_factory):
+    backend = FakeBackend(chunk_seconds=1.0)
+    address = server_factory(
+        engine=TTSEngine(backend=backend), warmup=False, limits=Limits(outbox_bytes=200_000)
+    ).server_address
+    stalled = small_rcvbuf_raw(address)
+    stalled.read()
+    stalled.request(1, long_text(200))  # ~9.6 MB, never read while rendering
+    started = time.monotonic()
+    with SpeakClient(address) as client:
+        assert client.synthesize("Hi.", timeout=5)[0]
+    assert time.monotonic() - started < 2
+    # Draining what made it into the socket ends in EOF, never END.
+    types = []
+    while True:
+        frame = stalled.read()
+        if frame is None:
+            break
+        types.append(frame[0])
+    assert 0x13 not in types and 0x14 not in types
+    assert backend.chunks_yielded < 200
+    stalled.close()
+
+
+def test_client_close_unblocks_reader(server_factory):
+    backend = FakeBackend(delay=0.2)
+    address = server_factory(engine=TTSEngine(backend=backend), warmup=False).server_address
+    client = SpeakClient(address)
+    response = client.submit(long_text(40))
+    errors = []
+
+    def consume():
+        try:
+            list(response.chunks())
+        except SpeakError as exc:
+            errors.append(exc.code)
+
+    thread = threading.Thread(target=consume)
+    thread.start()
+    time.sleep(0.1)
+    client.close()
+    thread.join(5)
+    assert not thread.is_alive()
+    assert errors == ["connection_closed"]
+
+
+def test_cancel_after_end_is_ignored(server, backend):
+    raw = Raw(server)
+    raw.read()
+    raw.request(1, "Done.")
+    assert raw.until_terminal(1)[-1][0] == 0x13
+    raw.send(0x02, 1)
+    raw.request(2, "Next.")
+    frames = []
+    while not frames or frames[-1][0] not in (0x13, 0x14):
+        frames.append(raw.read())
+    assert {f[1] for f in frames} == {2}
+    assert frames[-1][0] == 0x13
+    raw.close()
+
+
+def test_half_close_cancels_inflight(server_factory):
+    backend = FakeBackend(delay=0.05)
+    address = server_factory(engine=TTSEngine(backend=backend), warmup=False).server_address
+    raw = Raw(address)
+    raw.read()
+    raw.request(1, long_text(40))
+    assert raw.read()[0] == 0x11
+    raw.sock.shutdown(socket.SHUT_WR)
+    types = []
+    while True:
+        frame = raw.read()
+        if frame is None:
+            break
+        types.append(frame[0])
+    raw.close()
+    assert 0x13 not in types
+    assert backend.chunks_yielded < 40
+
+
+def test_chunks_timeout_cancels(server_factory):
+    backend = FakeBackend(delay=0.5)
+    address = server_factory(engine=TTSEngine(backend=backend), warmup=False).server_address
+    with SpeakClient(address) as client:
+        with pytest.raises(SpeakError) as info:
+            client.synthesize(long_text(20), timeout=0.1)
+        assert info.value.code == "timeout"
+        assert client.synthesize("After.", timeout=5)[0]
+    assert backend.chunks_yielded < 20

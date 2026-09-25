@@ -7,6 +7,8 @@ Every frame is a 9-byte big-endian header followed by `payload_len` bytes:
     payload_len u32   length of the payload that follows
 
 JSON payloads are UTF-8. AUDIO payloads are raw s16le mono PCM.
+
+Stdlib only, so clients can use it without numpy or the model.
 """
 
 from __future__ import annotations
@@ -16,6 +18,10 @@ import json
 import struct
 from dataclasses import dataclass
 from typing import Callable, Optional, Tuple
+
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 7333
+DEFAULT_VOICE = "af_heart"
 
 HEADER = struct.Struct("!BII")
 HEADER_SIZE = HEADER.size
@@ -62,8 +68,12 @@ class RequestSpec:
     speed: Optional[float] = None
 
 
+def encode_header(frame: Frame) -> bytes:
+    return HEADER.pack(int(frame.type), frame.request_id, len(frame.payload))
+
+
 def encode(frame: Frame) -> bytes:
-    return HEADER.pack(int(frame.type), frame.request_id, len(frame.payload)) + frame.payload
+    return encode_header(frame) + frame.payload
 
 
 def decode_header(data: bytes) -> Tuple[FrameType, int, int]:
