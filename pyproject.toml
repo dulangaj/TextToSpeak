@@ -15,6 +15,7 @@ dev = ["pytest"]
 [project.scripts]
 speak = "speakctl.cli:main"
 speak-serve = "speakctl.cli:serve_main"
+texttospeak = "speakctl.dialogue:main"
 
 [build-system]
 requires = ["hatchling"]

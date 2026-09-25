@@ -1,8 +1,9 @@
 # speakctl
 
 Local, offline text-to-speech on the Mac with [MLX-Audio](https://github.com/Blaizzy/mlx-audio) and
-[Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M): a `speak` command that writes WAV files, and a
-`speak-serve` server that streams audio to your apps.
+[Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M): a `speak` command that writes WAV files, a
+`texttospeak` command that turns a multi-voice conversation into one WAV, and a `speak-serve` server that
+streams audio to your apps.
 
 Requirements: Apple Silicon Mac, Python 3.10+ (3.12 tested).
 
@@ -22,6 +23,17 @@ The first run downloads Kokoro-82M plus the misaki/spaCy English model (a few GB
 speak -j af_heart:"Hello there" -j am_michael:"And here's the reply" -d out/   # two voices to files
 speak-serve                                                                   # stream to apps on 127.0.0.1:7333
 ```
+
+### Conversations
+
+```bash
+texttospeak "voice1: Hello there" "voice2: Hi, how are you?" -o chat.wav
+```
+
+`voice1` to `voice4` are `af_heart`, `am_michael`, `bf_emma` and `bm_george`; bare text is `voice1`, and any
+voice name works as a speaker too (`am_adam: Hi`). Swap voices with `--cast voice1=bf_alice,voice2=am_adam`,
+add `--split` to also get one file per line (`001_voice1.wav`, ...), and see every name with `--list-voices`.
+Lines can come from stdin (`texttospeak -o chat.wav < script.txt`); `--pause` sets the gap (default 0.35 s).
 
 ## Using the CLI
 
