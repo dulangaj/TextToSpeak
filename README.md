@@ -108,7 +108,127 @@ zf_xiaobei  zf_xiaoni   zf_xiaoxiao zf_xiaoyi
 zm_yunjian  zm_yunxi    zm_yunxia   zm_yunyang
 ```
 
+## Server mode
+
+`speak-serve` keeps the model loaded and streams speech to other local
+processes over a socket. Audio comes back sentence by sentence as it's
+produced, so playback can start before the whole text is rendered.
+
+```bash
+speak-serve                          # TCP on 127.0.0.1:7333
+speak-serve --socket /tmp/speak.sock # Unix socket instead
+```
+
+It binds first, then loads the model and runs a short warm-up (skip it with
+`--no-warmup`), and logs `ready, listening on ...` once requests will be
+served. Connections made while it's loading wait until it's ready. Other
+flags: `--host`, `--port`, `--model`, `--speed` (default rate),
+`--split-pattern` (regex that decides streaming chunk size; default is
+sentence boundaries), `--max-text-chars`, `--log-level`.
+
+Use `--watch` when you just want WAV files on disk from a shell pipeline. Use
+the server when another program wants the audio itself: it gets raw PCM back
+as it's produced, can run several requests at once over one connection, and
+can cancel them.
+
+### Python client
+
+```python
+from speakctl import SpeakClient
+
+with SpeakClient() as client:  # or SpeakClient("/tmp/speak.sock")
+    for pcm in client.stream("Welcome back. Today we talk about bees.", voice="af_heart"):
+        player.write(pcm)  # s16le mono at client.sample_rate
+
+    pcm, rate = client.synthesize("One-shot, whole clip.", voice="am_michael", speed=1.1)
+
+    response = client.submit("A long intro...")  # returns immediately
+    response.cancel()
+```
+
+Failures raise `SpeakError`, whose `.code` is one of the codes below.
+
+### Wire protocol
+
+Every frame, in both directions, is a 9-byte header followed by a payload:
+
+| Field         | Type                    | Notes                                   |
+|---------------|-------------------------|-----------------------------------------|
+| `type`        | u8                      | frame type, below                       |
+| `request_id`  | u32, big-endian         | chosen by the client; 0 is reserved     |
+| `payload_len` | u32, big-endian         | bytes of payload that follow            |
+
+| Type      | Value  | Direction        | Payload                                                         |
+|-----------|--------|------------------|-----------------------------------------------------------------|
+| `REQUEST` | `0x01` | client to server | JSON `{"text": str, "voice": str, "speed": number}`, speed optional |
+| `CANCEL`  | `0x02` | client to server | empty                                                           |
+| `HELLO`   | `0x10` | server to client | JSON, sent once on connect with `request_id` 0                  |
+| `START`   | `0x11` | server to client | JSON `{"sample_rate": int, "channels": 1, "format": "s16le"}`   |
+| `AUDIO`   | `0x12` | server to client | raw signed 16-bit little-endian mono PCM                        |
+| `END`     | `0x13` | server to client | empty                                                           |
+| `ERROR`   | `0x14` | server to client | JSON `{"code": str, "message": str}`                            |
+
+`HELLO` carries `protocol` (1), `sample_rate`, `channels`, `format`, `model`,
+`max_text_chars` and `max_inflight`. JSON is UTF-8. Client frames may carry
+at most 1 MiB of payload.
+
+A request's frames arrive as `START`, zero or more `AUDIO`, then `END`; or
+`ERROR` at any point instead of `END`. `END` or `ERROR` is always the last
+frame for that id, after which the id may be reused.
+
+| Code                | Meaning                                                                 |
+|---------------------|-------------------------------------------------------------------------|
+| `bad_request`       | id 0 or already in flight, bad JSON, empty or too-long text, voice not matching `[A-Za-z0-9_.-]{1,64}`, speed outside 0.5 to 2.0 |
+| `too_many_requests` | the connection already has `max_inflight` requests queued or rendering |
+| `cancelled`         | the request was cancelled                                               |
+| `engine_error`      | the model failed on this request; the server and connection carry on   |
+| `protocol_error`    | unreadable framing; the server closes the connection after sending it  |
+
+**Pipelining.** A client may send many `REQUEST`s without waiting. One
+worker renders requests in arrival order across all connections, so frames
+for different ids don't interleave in practice, but clients should route
+frames by `request_id` rather than rely on that. An `ERROR` for a duplicate
+id refers to the rejected frame; the original request keeps streaming.
+
+**Cancellation.** `CANCEL` stops a queued request before it starts, or a
+running one at the next chunk. Either way the request ends with
+`ERROR cancelled` (unless it had already finished; a late `CANCEL` is
+ignored). Closing the connection cancels everything it had in flight.
+
+**Unix socket.** With `--socket PATH` the server listens on a Unix domain
+socket; the protocol is identical. A stale socket file from an earlier run is
+replaced, and the file is removed on shutdown.
+
+**Slow readers.** If a client stops reading and its outgoing buffer stays
+full for 30 seconds, the server drops that connection.
+
+A client in any language only needs this loop:
+
+```
+connect
+read 9 bytes -> unpack "!BII" -> (type, id, len); read len bytes    # HELLO
+send pack("!BII", 0x01, 1, len(json)) + json                      # REQUEST id 1
+loop:
+    read 9 bytes; unpack "!BII"; read len bytes
+    0x11 START -> open audio output at sample_rate
+    0x12 AUDIO -> write payload to it
+    0x13 END   -> done with this id
+    0x14 ERROR -> fail this id with code/message
+```
+
+## Development
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install numpy pytest
+.venv/bin/pytest -q
+```
+
+Tests use a fake backend, so they need neither MLX nor the model.
+
 ## Layout
 
-`src/speakctl/engine.py` holds all model logic (`TTSEngine`); `cli.py` is a thin
-wrapper around it.
+`src/speakctl/engine.py` holds `TTSEngine`, which turns text into 16-bit PCM
+through a backend; `mlx_backend.py` is the MLX-Audio backend and the only
+module that imports MLX. `protocol.py` defines the server's wire format,
+`server.py` the server and `client.py` the Python client. `cli.py` provides
+the `speak` and `speak-serve` commands.
