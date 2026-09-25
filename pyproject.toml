@@ -6,10 +6,15 @@ requires-python = ">=3.10"
 dependencies = [
     "mlx-audio>=0.5",
     "misaki[en]>=0.9",
+    "numpy",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest"]
 
 [project.scripts]
 speak = "speakctl.cli:main"
+speak-serve = "speakctl.cli:serve_main"
 
 [build-system]
 requires = ["hatchling"]
@@ -17,3 +22,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/speakctl"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

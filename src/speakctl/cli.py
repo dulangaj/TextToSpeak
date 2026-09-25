@@ -1,12 +1,13 @@
-"""`speak` — turn one or more snippets of text into audio files."""
+"""`speak` turns snippets of text into audio files; `speak-serve` streams audio over a socket."""
 
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
-from .engine import DEFAULT_MODEL, DEFAULT_VOICE, Job, TTSEngine
+from .engine import DEFAULT_MODEL, DEFAULT_SPLIT_PATTERN, DEFAULT_VOICE, Job, TTSEngine
 
 
 def _parse_job(spec: str, default_voice: str) -> Job:
@@ -77,6 +78,62 @@ def main() -> int:
     engine = TTSEngine(model_id=args.model, speed=args.speed)
     for path in engine.synthesize_many(jobs, outdir=args.outdir):
         print(path)
+    return 0
+
+
+def serve_main(argv: list[str] | None = None) -> int:
+    from .server import DEFAULT_HOST, DEFAULT_PORT, Limits, SpeakServer
+
+    parser = argparse.ArgumentParser(
+        prog="speak-serve",
+        description="Keep the model loaded and stream speech to local clients over "
+        "TCP or a Unix socket. See the README for the wire protocol.",
+    )
+    where = parser.add_mutually_exclusive_group()
+    where.add_argument("--host", help=f"TCP host to bind (default: {DEFAULT_HOST})")
+    where.add_argument("--socket", metavar="PATH", help="listen on a Unix socket instead of TCP")
+    parser.add_argument("--port", type=int, help=f"TCP port to bind (default: {DEFAULT_PORT})")
+    parser.add_argument("--model", default=DEFAULT_MODEL, help=f"MLX-Audio model id (default: {DEFAULT_MODEL})")
+    parser.add_argument("--speed", type=float, default=1.0, help="default speech rate multiplier (default: 1.0)")
+    parser.add_argument(
+        "--split-pattern",
+        default=DEFAULT_SPLIT_PATTERN,
+        help="regex the model splits text on; each piece is streamed as soon as it's ready "
+        "(default: sentence boundaries)",
+    )
+    parser.add_argument(
+        "--max-text-chars", type=int, default=Limits.max_text_chars, help="longest accepted request text"
+    )
+    parser.add_argument("--no-warmup", action="store_true", help="skip the warm-up synthesis at startup")
+    parser.add_argument("--log-level", default="INFO", help="logging level (default: INFO)")
+    args = parser.parse_args(argv)
+    if args.socket and args.port is not None:
+        parser.error("argument --port: not allowed with argument --socket")
+
+    logging.basicConfig(level=args.log_level.upper(), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    log = logging.getLogger("speakctl.serve")
+
+    if args.socket:
+        address = args.socket
+    else:
+        address = (args.host or DEFAULT_HOST, DEFAULT_PORT if args.port is None else args.port)
+
+    server = SpeakServer(
+        address,
+        engine_factory=lambda: TTSEngine(model_id=args.model, speed=args.speed, split_pattern=args.split_pattern),
+        limits=Limits(max_text_chars=args.max_text_chars),
+        warmup=not args.no_warmup,
+    )
+    try:
+        log.info("loading %s", args.model)
+        server.start()
+        where_desc = server.server_address if args.socket else "%s:%d" % server.server_address[:2]
+        log.info("ready, listening on %s", where_desc)
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
     return 0
 
 
