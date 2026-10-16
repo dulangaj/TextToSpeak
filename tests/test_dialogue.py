@@ -47,9 +47,10 @@ def test_parse_line_colon_after_several_words_is_bare_text():
     assert parse_line("Meet at 10:30", DEFAULT_CAST) == Turn("voice1", "af_heart", "Meet at 10:30")
 
 
-def test_parse_line_bad_speaker():
-    with pytest.raises(ValueError, match="'Bob'"):
-        parse_line("Bob: hello", DEFAULT_CAST)
+@pytest.mark.parametrize("speaker", ["Bob", "xx_nobody", "af_notreal"])
+def test_parse_line_bad_speaker(speaker):
+    with pytest.raises(ValueError, match=repr(speaker)):
+        parse_line(f"{speaker}: hello", DEFAULT_CAST)
 
 
 def test_resolve_cast_default():
@@ -62,7 +63,7 @@ def test_resolve_cast_override_merges():
     assert DEFAULT_CAST["voice1"] == "af_heart"
 
 
-@pytest.mark.parametrize("spec", ["voice9=af_heart", "voice1", "voice1=Not A Voice"])
+@pytest.mark.parametrize("spec", ["voice9=af_heart", "voice1", "voice1=Not A Voice", "voice1=xx_nobody"])
 def test_resolve_cast_rejects_bad_entries(spec):
     with pytest.raises(ValueError):
         resolve_cast(spec)

@@ -160,6 +160,7 @@ def test_pipelined_via_client(server, engine):
         {"text": "Hi.", "voice": "../etc/passwd"},
         {"text": "Hi.", "voice": ""},
         {"text": "Hi.", "voice": "a" * 65},
+        {"text": "Hi.", "voice": "xx_nobody"},
         {"text": "Hi.", "speed": 0.1},
         {"text": "Hi.", "speed": 5.0},
         {"text": "Hi.", "speed": float("nan")},

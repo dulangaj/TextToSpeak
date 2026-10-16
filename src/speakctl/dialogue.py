@@ -28,7 +28,6 @@ DEFAULT_SPEAKER = "voice1"
 DEFAULT_OUTPUT = "conversation.wav"
 DEFAULT_PAUSE = 0.35
 
-VOICE_NAME = re.compile(r"^[a-z]{2}_[a-z0-9]+$")
 # Only a single word before the first colon counts as a speaker, so text like
 # "Meet at 10:30" stays bare text.
 SPEAKER_PREFIX = re.compile(r"^\s*([A-Za-z0-9_]+)\s*:(.*)$", re.DOTALL)
@@ -56,8 +55,8 @@ def resolve_cast(spec: str | None) -> Dict[str, str]:
         if not sep or alias not in DEFAULT_CAST:
             aliases = ", ".join(DEFAULT_CAST)
             raise ValueError(f"bad --cast entry {item.strip()!r}: expected ALIAS=VOICE with ALIAS one of {aliases}")
-        if not VOICE_NAME.match(voice):
-            raise ValueError(f"bad --cast entry {item.strip()!r}: {voice!r} is not a voice name")
+        if voice not in KOKORO_VOICES:
+            raise ValueError(f"bad --cast entry {item.strip()!r}: {voice!r} is not a voice name (see --list-voices)")
         cast[alias] = voice
     return cast
 
@@ -71,9 +70,9 @@ def parse_line(line: str, cast: Dict[str, str]) -> Turn:
     key = speaker.lower()
     if key in cast:
         return Turn(speaker, cast[key], text)
-    if VOICE_NAME.match(key):
+    if key in KOKORO_VOICES:
         return Turn(speaker, key, text)
-    raise ValueError(f"unknown speaker {speaker!r}: use one of {', '.join(cast)} or a voice name like am_michael")
+    raise ValueError(f"unknown speaker {speaker!r}: use one of {', '.join(cast)} or a voice from --list-voices")
 
 
 def build_jobs(lines: Iterable[str], cast: Dict[str, str]) -> List[Turn]:

@@ -13,7 +13,6 @@ import errno
 import logging
 import os
 import queue
-import re
 import socket
 import socketserver
 import stat
@@ -23,10 +22,10 @@ from typing import Callable, Deque, Dict, Optional, Set, Tuple, Union
 
 from . import protocol as p
 from .engine import TTSEngine
+from .voices import KOKORO_VOICES
 
 log = logging.getLogger(__name__)
 
-VOICE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 SPEED_MIN, SPEED_MAX = 0.5, 2.0
 DEFAULT_HOST = p.DEFAULT_HOST
 DEFAULT_PORT = p.DEFAULT_PORT
@@ -233,8 +232,8 @@ class Handler(socketserver.BaseRequestHandler):
             return reject(p.ErrorCode.BAD_REQUEST, "text is empty")
         if len(spec.text) > limits.max_text_chars:
             return reject(p.ErrorCode.BAD_REQUEST, f"text exceeds {limits.max_text_chars} characters")
-        if not VOICE_RE.match(spec.voice):
-            return reject(p.ErrorCode.BAD_REQUEST, f"invalid voice name: {spec.voice!r}")
+        if spec.voice not in KOKORO_VOICES:
+            return reject(p.ErrorCode.BAD_REQUEST, f"unknown voice: {spec.voice!r}")
         if spec.speed is not None and not SPEED_MIN <= spec.speed <= SPEED_MAX:
             return reject(p.ErrorCode.BAD_REQUEST, f"speed must be between {SPEED_MIN} and {SPEED_MAX}")
         with conn.lock:
