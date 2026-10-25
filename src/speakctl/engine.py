@@ -1,23 +1,36 @@
-"""Text-to-speech engine wrapping MLX-Audio. The only place model logic lives."""
+"""Text-to-speech engine: turns text into 16-bit PCM using a pluggable backend.
+
+This module imports only the stdlib and numpy. The MLX model lives in
+`mlx_backend.py` and is imported lazily, so tests and clients can use the
+engine API without MLX installed.
+"""
 
 from __future__ import annotations
 
-import inspect
-import os
+import wave
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterator, List, Protocol
 
-import mlx.core as mx
-from huggingface_hub.errors import LocalEntryNotFoundError
-from huggingface_hub.utils import disable_progress_bars
-from mlx_audio.audio_io import write as audio_write
-from mlx_audio.tts.utils import load_model
+import numpy as np
 
-disable_progress_bars()
+from .protocol import DEFAULT_VOICE
 
 DEFAULT_MODEL = "mlx-community/Kokoro-82M-bf16"
-DEFAULT_VOICE = "af_heart"
 DEFAULT_SAMPLE_RATE = 24000
+# Sentence-sized chunks keep the time to first audio low when streaming.
+DEFAULT_SPLIT_PATTERN = r"(?<=[.!?…])\s+|\n+"
+WARMUP_TEXT = "Warming up."
+
+
+class Backend(Protocol):
+    """Something that renders text to float32 mono audio, one chunk at a time."""
+
+    sample_rate: int
+
+    def render(self, text: str, voice: str, speed: float) -> Iterator[np.ndarray]:
+        """Yield 1-D float32 arrays with samples in [-1, 1]."""
+        ...
 
 
 @dataclass
@@ -29,30 +42,58 @@ class Job:
     output_path: Path | None = None
 
 
-class TTSEngine:
-    """Loads a TTS model once and synthesizes any number of snippets with it."""
+def float_to_s16le(samples: np.ndarray) -> bytes:
+    """Convert float audio in [-1, 1] to little-endian signed 16-bit PCM bytes."""
+    audio = np.clip(np.asarray(samples, dtype=np.float32).reshape(-1), -1.0, 1.0)
+    return (audio * 32767).astype("<i2").tobytes()
 
-    def __init__(self, model_id: str = DEFAULT_MODEL, speed: float = 1.0):
+
+class TTSEngine:
+    """Loads a TTS backend once and synthesizes any number of snippets with it.
+
+    `split_pattern` is the regex the MLX model splits text on before rendering;
+    None keeps the model's own default. It only applies when the engine loads
+    the model itself, and is ignored when an explicit `backend` is passed.
+    """
+
+    def __init__(
+        self,
+        model_id: str = DEFAULT_MODEL,
+        speed: float = 1.0,
+        backend: Backend | None = None,
+        split_pattern: str | None = DEFAULT_SPLIT_PATTERN,
+    ):
         self.model_id = model_id
         self.speed = speed
-        self.model = self._load_model_cache_first(model_id)
-        self._accepts_lang_code = "lang_code" in inspect.signature(self.model.generate).parameters
+        if backend is None:
+            from .mlx_backend import MlxBackend
 
-    @staticmethod
-    def _load_model_cache_first(model_id: str):
-        """Try the local cache with no network round-trip; fetch only if something's missing."""
-        prior = os.environ.get("HF_HUB_OFFLINE")
-        os.environ["HF_HUB_OFFLINE"] = "1"
-        try:
-            return load_model(model_id)
-        except (LocalEntryNotFoundError, FileNotFoundError):
-            pass
-        finally:
-            if prior is None:
-                os.environ.pop("HF_HUB_OFFLINE", None)
-            else:
-                os.environ["HF_HUB_OFFLINE"] = prior
-        return load_model(model_id)
+            backend = MlxBackend.load(model_id, split_pattern)
+        self.backend = backend
+
+    @property
+    def sample_rate(self) -> int:
+        return int(self.backend.sample_rate)
+
+    def stream_pcm(self, text: str, voice: str = DEFAULT_VOICE, speed: float | None = None) -> Iterator[bytes]:
+        """Yield s16le mono PCM, one piece per chunk the backend produces."""
+        text = text.strip()
+        if not text:
+            raise ValueError("no text to synthesize")
+        speed = self.speed if speed is None else speed
+        produced = False
+        for chunk in self.backend.render(text, voice, speed):
+            pcm = float_to_s16le(chunk)
+            if not pcm:
+                continue
+            produced = True
+            yield pcm
+        if not produced:
+            raise RuntimeError(f"model produced no audio for: {text[:60]!r}")
+
+    def synthesize_pcm(self, text: str, voice: str = DEFAULT_VOICE, speed: float | None = None) -> bytes:
+        """Render `text` to one block of s16le mono PCM."""
+        return b"".join(self.stream_pcm(text, voice=voice, speed=speed))
 
     def synthesize(
         self,
@@ -61,32 +102,21 @@ class TTSEngine:
         voice: str = DEFAULT_VOICE,
         speed: float | None = None,
     ) -> Path:
-        """Render `text` in `voice` to `output_path` and return the path written."""
-        text = text.strip()
-        if not text:
-            raise ValueError("no text to synthesize")
-
-        kwargs = {"lang_code": voice[0]} if self._accepts_lang_code else {}
-        results = list(
-            self.model.generate(
-                text=text,
-                voice=voice,
-                speed=self.speed if speed is None else speed,
-                **kwargs,
-            )
-        )
-        if not results:
-            raise RuntimeError(f"model produced no audio for: {text[:60]!r}")
-
-        audio = mx.concatenate([r.audio for r in results])
-        sample_rate = getattr(results[0], "sample_rate", DEFAULT_SAMPLE_RATE)
-
+        """Render `text` in `voice` to a WAV file at `output_path` and return the path."""
+        chunks = self.stream_pcm(text, voice=voice, speed=speed)
+        first = next(chunks)  # validates text and surfaces errors before touching disk
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        audio_write(path, audio, sample_rate)
+        with wave.open(str(path), "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(self.sample_rate)
+            wav.writeframes(first)
+            for pcm in chunks:
+                wav.writeframes(pcm)
         return path
 
-    def synthesize_many(self, jobs: list[Job], outdir: str | Path = ".") -> list[Path]:
+    def synthesize_many(self, jobs: List[Job], outdir: str | Path = ".") -> List[Path]:
         """Render every job, reusing the one loaded model. Returns paths in order."""
         outdir = Path(outdir)
         paths = []
@@ -94,3 +124,7 @@ class TTSEngine:
             path = job.output_path or outdir / f"{index:03d}_{job.voice}.wav"
             paths.append(self.synthesize(job.text, path, voice=job.voice))
         return paths
+
+    def warmup(self) -> None:
+        """Run one short synthesis so the first real request doesn't pay compile costs."""
+        self.synthesize_pcm(WARMUP_TEXT)
