@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import inspect
-import os
 from typing import Iterator
 
 import numpy as np
@@ -14,21 +13,20 @@ from .engine import DEFAULT_SAMPLE_RATE
 def _load_model_cache_first(model_id: str):
     """Try the local cache with no network round-trip; fetch only if something's missing."""
     from mlx_audio.tts.utils import load_model
+    from huggingface_hub import constants
     from huggingface_hub.errors import LocalEntryNotFoundError
     from huggingface_hub.utils import disable_progress_bars
 
     disable_progress_bars()
-    prior = os.environ.get("HF_HUB_OFFLINE")
-    os.environ["HF_HUB_OFFLINE"] = "1"
+    # huggingface_hub reads the HF_HUB_OFFLINE env var once, at import, so set its constant.
+    prior = constants.HF_HUB_OFFLINE
+    constants.HF_HUB_OFFLINE = True
     try:
         return load_model(model_id)
     except (LocalEntryNotFoundError, FileNotFoundError):
         pass
     finally:
-        if prior is None:
-            os.environ.pop("HF_HUB_OFFLINE", None)
-        else:
-            os.environ["HF_HUB_OFFLINE"] = prior
+        constants.HF_HUB_OFFLINE = prior
     return load_model(model_id)
 
 

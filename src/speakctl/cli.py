@@ -4,18 +4,24 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 import sys
 from pathlib import Path
 
 from .engine import DEFAULT_MODEL, DEFAULT_SPLIT_PATTERN, DEFAULT_VOICE, Job, TTSEngine
 
 
+# Only a single word before the first colon counts as a voice, so text like
+# "Meet at 10:30" stays bare text.
+VOICE_PREFIX = re.compile(r"\s*([\w.-]+)\s*:(.*)", re.DOTALL)
+
+
 def _parse_job(spec: str, default_voice: str) -> Job:
     """Parse a `voice:text` pair; a bare snippet falls back to the default voice."""
-    voice, sep, text = spec.partition(":")
-    if not sep or not voice.strip():
+    match = VOICE_PREFIX.fullmatch(spec)
+    if not match:
         return Job(text=spec, voice=default_voice)
-    return Job(text=text, voice=voice.strip())
+    return Job(text=match.group(2), voice=match.group(1))
 
 
 def _collect_jobs(args: argparse.Namespace) -> list[Job]:
@@ -63,7 +69,11 @@ def main() -> int:
             if not job.text.strip():
                 continue
             path = outdir / f"{index:03d}_{job.voice}.wav"
-            engine.synthesize(job.text, path, voice=job.voice)
+            try:
+                engine.synthesize(job.text, path, voice=job.voice)
+            except Exception as exc:  # one bad line must not stop the watcher
+                print(f"speak: line {index}: {exc}", file=sys.stderr, flush=True)
+                continue
             print(path, flush=True)
         return 0
 

@@ -62,7 +62,7 @@ speak -d out/ < requests.txt                                    # big batch: one
 
 ```bash
 mkfifo /tmp/speak.fifo
-speak --watch -d out/ < /tmp/speak.fifo &
+speak --watch -d out/ <> /tmp/speak.fifo &   # <> keeps the FIFO open between writers
 echo 'af_heart: first' > /tmp/speak.fifo
 ```
 
@@ -146,7 +146,7 @@ Per request: `START`, zero or more `AUDIO`, then `END`; or `ERROR` at any point 
 
 | Code | Meaning |
 |------|---------|
-| `bad_request` | id 0 or already in flight, bad JSON, empty or too-long text, voice not matching `[A-Za-z0-9_.-]{1,64}`, speed outside 0.5 to 2.0 |
+| `bad_request` | id 0 or already in flight, bad JSON, empty or too-long text, voice not in the list under Voices, speed outside 0.5 to 2.0 |
 | `too_many_requests` | the connection already has `max_inflight` requests queued or rendering |
 | `cancelled` | the request was cancelled |
 | `engine_error` | the model failed on this request; the connection carries on |
